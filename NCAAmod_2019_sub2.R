@@ -1,6 +1,8 @@
+options("scipen"=999)
+
 ## Prep data from 2018
 if (!require("pacman")) install.packages("pacman")
-pacman::p_load(dplyr, data.table, magrittr, ggplot2, gridExtra, ggExtra, stringr)
+pacman::p_load(dplyr, data.table, magrittr, ggplot2, gridExtra, ggExtra, stringr,snow,parallel,glmnet,neuralnet)
 theme_set(theme_bw())
 library(tidyr)
 
@@ -15,24 +17,13 @@ seeds <- fread('NCAATourneySeeds.csv')
 seas_results <- fread('RegularSeasonCompactResults.csv')
 tour_results <- fread('NCAATourneyCompactResults.csv')
 seas_detail <- fread('RegularSeasonDetailedResults.csv')
-tour_detail <- fread('NCAATourneyDetailedResults.csv')
 conferences <- fread('Conferences.csv')
 team_conferences <- fread('TeamConferences.csv')
 coaches <- fread('TeamCoaches.csv')
 
-setkey(teams, TeamID)
-setkey(seeds, TeamID)
+seas_detail[,max(Season)]
 
-g1 <-
-  teams[seeds][, one_seed := as.numeric(substr(Seed, 2, 3)) == 1][, sum(one_seed), by = TeamName][order(V1, decreasing = T)][1:15,] %>%
-  ggplot(aes(x = reorder(TeamName, V1), y = V1)) +
-  geom_bar(stat = 'identity', fill = 'darkblue') +
-  labs(x = '', y = 'No 1 seeds', title = 'No. 1 Seeds since 1985') +
-  coord_flip()
-g1
-
-setkey(seas_results, WTeamID)
-
+#Compile stats for winning teams from the season detail datafile
 win_stats <- seas_detail[, .(
   Season,
   TeamID = WTeamID,
@@ -92,6 +83,7 @@ los_stats <- seas_detail[, .(
 )]
 
 stats_all <- rbindlist(list(win_stats, los_stats))
+stats_all[,max(Season)]
 
 stats_season <- stats_all[, .(
   wins=sum(Outcome=='W'), #Wins
@@ -238,7 +230,8 @@ t_comp[,seed_diff:=as.numeric(seed_1)-as.numeric(seed_2)]
 t_comp[,.(.N,mean(result)),,by=seed_diff][order(seed_diff)]
 
 train <- t_comp[Season<2015,]
-test <- t_comp[Season>=2015,]
+test <- t_comp[Season>=2015 & Season<=2017,]
+val <- t_comp[Season==2018,]
 
 lm1 <- lm(result ~ seed_diff,data=train)
 summary(lm1)
@@ -246,7 +239,7 @@ summary(lm1)
 test$pred_lm1 <- predict(lm1,test)
 
 #confusionMatrix(test$result,test$pred_lm1)
-
+#Define multi-logloss 
 MultiLogLoss <- function(act, pred){
   eps <- 1e-15
   pred <- pmin(pmax(pred, eps), 1 - eps)
@@ -259,137 +252,39 @@ library(xgboost)
 library(caret)
 head(t_comp)
 
-fwrite(t_comp,"tourney_features_v2.csv")
+#fwrite(t_comp,"tourney_features_v2.csv")
 #names(t_comp)[grepl('diff',names(t_comp))]
 #conf_n <- t_comp[,.N,.(ConfAbbrev_1,ConfAbbrev_2)][order(-N)]
 
 #Get predictors from file
-pred <- c("Season","Team1","Team2","result",
-  'CoachPriorWins_1',
-  'seed_1',
-  'rank_1',
-  'conference_1',
-  'adj_em_1',
-  'adj_o_1',
-  'adj_o_rank_1',
-  'adj_d_1',
-  'adj_d_rank_1',
-  'adj_tempo_1',
-  'adj_tempo_rank_1',
-  'luck_1',
-  'luck_rank_1',
-  'sos_adj_em_1',
-  'sos_adj_em_rank_1',
-  'sos_adj_o_1',
-  'sos_adj_o_rank_1',
-  'sos_adj_d_1',
-  'sos_adj_d_rank_1',
-  'nc_sos_adj_em_1',
-  'nc_sos_adj_em_rank_1',
-  'wins_1',
-  'loses_1',
-  'win_pcnt_1',
-  'score_1',
-  'opp_score_1',
-  'FGP_1',
-  'FGP3_1',
-  'FTP_1',
-  'ORPG_1',
-  'DRPG_1',
-  'ASPG_1',
-  'TOPG_1',
-  'STPG_1',
-  'BLPG_1',
-  'PFPG_1',
-  'MORP_1',
-  'MPOS_1',
-  'TPpcnt_1',
-  'PPPos_1',
-  'OPPPos_1',
-  'TOPPos_1',
-  'DRPPos_1',
-  'STLPos_1',
-  'CoachPriorWins_2',
-  'seed_2',
-  'rank_2',
-  'conference_2',
-  'adj_em_2',
-  'adj_o_2',
-  'adj_o_rank_2',
-  'adj_d_2',
-  'adj_d_rank_2',
-  'adj_tempo_2',
-  'adj_tempo_rank_2',
-  'luck_2',
-  'luck_rank_2',
-  'sos_adj_em_2',
-  'sos_adj_em_rank_2',
-  'sos_adj_o_2',
-  'sos_adj_o_rank_2',
-  'sos_adj_d_2',
-  'sos_adj_d_rank_2',
-  'nc_sos_adj_em_2',
-  'nc_sos_adj_em_rank_2',
-  'wins_2',
-  'loses_2',
-  'win_pcnt_2',
-  'score_2',
-  'opp_score_2',
-  'FGP_2',
-  'FGP3_2',
-  'FTP_2',
-  'ORPG_2',
-  'DRPG_2',
-  'ASPG_2',
-  'TOPG_2',
-  'STPG_2',
-  'BLPG_2',
-  'PFPG_2',
-  'MORP_2',
-  'MPOS_2',
-  'TPpcnt_2',
-  'PPPos_2',
-  'OPPPos_2',
-  'TOPPos_2',
-  'DRPPos_2',
-  'STLPos_2',
-  'adj_em_diff',
-  'adj_o_diff',
-  'adj_o_rank_diff',
-  'adj_d_diff',
-  'adj_d_rank_diff',
-  'adj_tempo_diff',
-  'adj_tempo_rank_diff',
-  'luck_diff',
-  'luck_rank_diff',
-  'sos_adj_em_diff',
-  'sos_adj_em_rank_diff',
-  'sos_adj_o_diff',
-  'sos_adj_o_rank_diff',
-  'sos_adj_d_diff',
-  'sos_adj_d_rank_diff',
-  'nc_sos_adj_em_diff',
-  'nc_sos_adj_em_rank_diff',
-  'FGP_diff',
-  'FGP3_diff',
-  'FTP_diff',
-  'ORPG_diff',
-  'DRPG_diff',
-  'ASPG_diff',
-  'TOPG_diff',
-  'STPG_diff',
-  'BLPG_diff',
-  'PFPG_diff',
-  'MORP_diff',
-  'MPOS_diff',
-  'TPpcnt_diff',
-  'PPPos_diff',
-  'OPPPos_diff',
-  'TOPPos_diff',
-  'DRPPos_diff',
-  'STLPos_diff',
-  'seed_diff'
-)
+pred <-c("Season","Team1","Team2","result",
+         #Team 1
+         'CoachPriorWins_1','seed_1','rank_1','conference_1',
+         #Kenpom Stats
+         'adj_em_1','adj_o_1','adj_o_rank_1','adj_d_1','adj_d_rank_1','adj_tempo_1','adj_tempo_rank_1','luck_1','luck_rank_1',
+         'sos_adj_em_1','sos_adj_em_rank_1','sos_adj_o_1','sos_adj_o_rank_1','sos_adj_d_1','sos_adj_d_rank_1',
+         'nc_sos_adj_em_1','nc_sos_adj_em_rank_1',
+         #Season Stats
+         'wins_1','loses_1','win_pcnt_1','score_1','opp_score_1','FGP_1','FGP3_1','FTP_1','ORPG_1','DRPG_1','ASPG_1','TOPG_1',
+         'STPG_1','BLPG_1','PFPG_1','MORP_1','MPOS_1','TPpcnt_1','PPPos_1','OPPPos_1','TOPPos_1','DRPPos_1','STLPos_1',
+         
+         #Team 2
+         'CoachPriorWins_2','seed_2','rank_2','conference_2',
+         #Team2 Kenpom Stats
+         'adj_em_2','adj_o_2','adj_o_rank_2','adj_d_2','adj_d_rank_2','adj_tempo_2','adj_tempo_rank_2','luck_2','luck_rank_2',
+         'sos_adj_em_2','sos_adj_em_rank_2','sos_adj_o_2','sos_adj_o_rank_2','sos_adj_d_2','sos_adj_d_rank_2','nc_sos_adj_em_2',
+         'nc_sos_adj_em_rank_2',
+         #Team2 Stats
+         'wins_2','loses_2','win_pcnt_2','score_2','opp_score_2','FGP_2','FGP3_2','FTP_2','ORPG_2','DRPG_2','ASPG_2','TOPG_2','STPG_2',
+         'BLPG_2','PFPG_2','MORP_2','MPOS_2','TPpcnt_2','PPPos_2','OPPPos_2','TOPPos_2','DRPPos_2','STLPos_2',
+         #Kenpom Differences
+         'adj_em_diff','adj_o_diff','adj_o_rank_diff','adj_d_diff','adj_d_rank_diff','adj_tempo_diff','adj_tempo_rank_diff',
+         'luck_diff','luck_rank_diff','sos_adj_em_diff','sos_adj_em_rank_diff','sos_adj_o_diff','sos_adj_o_rank_diff',
+         'sos_adj_d_diff','sos_adj_d_rank_diff','nc_sos_adj_em_diff','nc_sos_adj_em_rank_diff',
+         #Team Stat Differences
+         'FGP_diff','FGP3_diff','FTP_diff','ORPG_diff','DRPG_diff','ASPG_diff','TOPG_diff','STPG_diff','BLPG_diff',
+         'PFPG_diff','MORP_diff','MPOS_diff','TPpcnt_diff','PPPos_diff','OPPPos_diff','TOPPos_diff','DRPPos_diff',
+         'STLPos_diff','seed_diff')
 
 t_pred <- t_comp[,pred,with=F]
 save(t_pred,file='t_pred.Rdata')
@@ -406,35 +301,81 @@ t_pred[,rank_2:=as.numeric(rank_2)]
 t_pred[!complete.cases(t_pred),]
 
 train <- t_pred[t_pred$Season<2015,]
-test <- t_pred[t_pred$Season>=2015,]
+test <- t_pred[t_pred$Season>=2015 & t_pred$Season<=2017,]
+val <- t_pred[t_pred$Season==2018,]
 
 train_mat <- model.matrix(result~.+0,data=train[,4:128])
 test_mat <- model.matrix(result~.+0,data=test[,4:128])
+val_mat <- model.matrix(result~.+0,data=val[,4:128])
 dim(train_mat)
 dim(test_mat)
 
 dtrain <- xgb.DMatrix(data=train_mat,label=train$result)
 dtest <- xgb.DMatrix(data=test_mat,label=test$result)
+dval <- xgb.DMatrix(data=val_mat,label=val$result)
 
-params <- list(booster = "gbtree", objective = "binary:logistic", tree_method="hist", eta=0.3, gamma=0, max_depth=6, min_child_weight=1, subsample=1, colsample_bytree=1)
+params <- list(booster = "gbtree", objective = "binary:logistic", tree_method="hist", 
+               eta=0.01, gamma=0, max_depth=4, min_child_weight=1, subsample=.8, colsample_bytree=1)
 
-xgb1 <- xgb.train (params = params, data = dtrain, nrounds = 79, watchlist = list(val=dtest,train=dtrain), print.every.n = 10, early.stop.round = 10, maximize = F , eval_metric = "error")
+xgb1 <- xgb.train (params = params, data = dtrain, nrounds = 411, watchlist = list(val=dtest,train=dtrain), 
+                   print_every_n = 10, early_stopping_rounds = 10, maximize = F , eval_metric = "logloss")
+
+#validate test error
+xgpred1 <- predict(xgb1,dtest)
+MultiLogLoss(test$result,xgpred1)
+#confusionMatrix(xgpred1,test$result)
+
+xgpred1 <- predict(xgb1,dval)
+MultiLogLoss(val$result,xgpred1)
+
+#Fit GLMnet --no idea why the w/l ratio is throwing an error
+m2 <- model.matrix(result~-1+.,data=train[,c(4:71,73:128)])
+GLM.fit = cv.glmnet(m2,y=train$result,family="binomial")
+plot(GLM.fit)
+
+coef(GLM.fit, s = "lambda.min")
+
+glmnet_pred <- predict(GLM.fit, newx=model.matrix(result~-1+.,test[,c(4:71,73:128)]), s = "lambda.min", type="response")
 
 xgpred1 <- predict(xgb1,dtest)
-confusionMatrix(xgpred1,test$result)
+MultiLogLoss(test$result,glmnet_pred)
 
-MultiLogLoss(test$result,xgpred1)
+#Plot relationship between 2-estimates
+MultiLogLoss(val$result,xgpred1)
+ggplot(,aes(x=xgpred1,y=glmnet_pred,col=factor(test$result))) + geom_point(alpha=.7) + theme_bw()
+
+#Plot relationship between 2-estimates
+xgpred2_val <- predict(xgb2,dval)
+MultiLogLoss(val$result,xgpred2_val)
+ggplot(,aes(x=xgpred1,y=xgpred2,col=factor(test$result))) + geom_point(alpha=.7) + theme_bw()
 
 ######### Create Submission ###########
 
 list.files()
-sub_samp1 <- fread("SampleSubmissionStage2.csv") %>%
+sub_samp2 <- fread("SampleSubmissionStage2.csv") %>%
   select(ID) %>% 
   separate(ID, sep = "_", into = c("Season", "Team1", "Team2"), convert = TRUE)
 
-test2 <- merge(sub_samp1,s1_1,by.x=c("Season", "Team1"),by.y=c("Season_1","TeamID_1"),all.x = T)
+test2 <- merge(sub_samp2,s1_1,by.x=c("Season", "Team1"),by.y=c("Season_1","TeamID_1"),all.x = T)
 test2 <- merge(test2,s1_2,by.x=c("Season", "Team2"),by.y=c("Season_2","TeamID_2"),all.x = T)
 
+test2[,adj_em_diff:=adj_em_1-adj_em_2]
+test2[,adj_o_diff:=adj_o_1-adj_o_2]
+test2[,adj_o_rank_diff:=adj_o_rank_1-adj_o_rank_2]
+test2[,adj_d_diff:=adj_d_1-adj_d_2]
+test2[,adj_d_rank_diff:=adj_d_rank_1-adj_d_rank_2]
+test2[,adj_tempo_diff:=adj_tempo_1-adj_tempo_2]
+test2[,adj_tempo_rank_diff:=adj_tempo_rank_1-adj_tempo_rank_2]
+test2[,luck_diff:=luck_1-luck_2]
+test2[,luck_rank_diff:=luck_rank_1-luck_rank_2]
+test2[,sos_adj_em_diff:=sos_adj_em_1-sos_adj_em_2]
+test2[,sos_adj_em_rank_diff:=sos_adj_em_rank_1-sos_adj_em_rank_2]
+test2[,sos_adj_o_diff:=sos_adj_o_1-sos_adj_o_2]
+test2[,sos_adj_o_rank_diff:=sos_adj_o_rank_1-sos_adj_o_rank_2]
+test2[,sos_adj_d_diff:=sos_adj_d_1-sos_adj_d_2]
+test2[,sos_adj_d_rank_diff:=sos_adj_d_rank_1-sos_adj_d_rank_2]
+test2[,nc_sos_adj_em_diff:=nc_sos_adj_em_1-nc_sos_adj_em_2]
+test2[,nc_sos_adj_em_rank_diff:=nc_sos_adj_em_rank_1-nc_sos_adj_em_rank_2]
 test2[,FGP_diff:=FGP_1-FGP_2]
 test2[,FGP3_diff:=FGP3_1-FGP3_2]
 test2[,FTP_diff:=FTP_1-FTP_2]
@@ -447,126 +388,118 @@ test2[,BLPG_diff:=BLPG_1-BLPG_2]
 test2[,PFPG_diff:=PFPG_1-PFPG_2]
 test2[,MORP_diff:=MORP_1-MORP_2]
 test2[,MPOS_diff:=MPOS_1-MPOS_2]
+test2[,TPpcnt_diff:=TPpcnt_1-TPpcnt_2]
+test2[,PPPos_diff:=PPPos_1-PPPos_2]
+test2[,OPPPos_diff:=OPPPos_1-OPPPos_2]
+test2[,TOPPos_diff:=TOPPos_1-TOPPos_2]
+test2[,DRPPos_diff:=DRPPos_1-DRPPos_2]
+test2[,STLPos_diff:=STLPos_1-STLPos_2]
 test2[,seed_diff:=as.numeric(seed_1)-as.numeric(seed_2)]
+test2[,.(.N,mean(result)),,by=seed_diff][order(seed_diff)]
 
-pred2 <- c("Season","Team1","Team2",'seed_1',
-          'rank_1',
-          'conference_1',
-          'adj_em_1',
-          'adj_o_1',
-          'adj_o_rank_1',
-          'adj_d_1',
-          'adj_d_rank_1',
-          'adj_tempo_1',
-          'adj_tempo_rank_1',
-          'luck_1',
-          'luck_rank_1',
-          'sos_adj_em_1',
-          'sos_adj_em_rank_1',
-          'sos_adj_o_1',
-          'sos_adj_o_rank_1',
-          'sos_adj_d_1',
-          'sos_adj_d_rank_1',
-          'nc_sos_adj_em_1',
-          'nc_sos_adj_em_rank_1',
-          'wins_1',
-          'loses_1',
-          'score_1',
-          'opp_score_1',
-          'FGP_1',
-          'FGP3_1',
-          'FTP_1',
-          'ORPG_1',
-          'DRPG_1',
-          'ASPG_1',
-          'TOPG_1',
-          'STPG_1',
-          'BLPG_1',
-          'PFPG_1',
-          'MORP_1',
-          'MPOS_1',
-          'TPpcnt_1',
-          'seed_2',
-          'rank_2',
-          'conference_2',
-          'adj_em_2',
-          'adj_o_2',
-          'adj_o_rank_2',
-          'adj_d_2',
-          'adj_d_rank_2',
-          'adj_tempo_2',
-          'adj_tempo_rank_2',
-          'luck_2',
-          'luck_rank_2',
-          'sos_adj_em_2',
-          'sos_adj_em_rank_2',
-          'sos_adj_o_2',
-          'sos_adj_o_rank_2',
-          'sos_adj_d_2',
-          'sos_adj_d_rank_2',
-          'nc_sos_adj_em_2',
-          'nc_sos_adj_em_rank_2',
-          'wins_2',
-          'loses_2',
-          'score_2',
-          'opp_score_2',
-          'FGP_2',
-          'FGP3_2',
-          'FTP_2',
-          'ORPG_2',
-          'DRPG_2',
-          'ASPG_2',
-          'TOPG_2',
-          'STPG_2',
-          'BLPG_2',
-          'PFPG_2',
-          'MORP_2',
-          'MPOS_2',
-          'TPpcnt_2',
-          'FGP_diff',
-          'FGP3_diff',
-          'FTP_diff',
-          'ORPG_diff',
-          'DRPG_diff',
-          'ASPG_diff',
-          'TOPG_diff',
-          'STPG_diff',
-          'BLPG_diff',
-          'PFPG_diff',
-          'MORP_diff',
-          'MPOS_diff',
-          'seed_diff')
+pred2 <- c("Season","Team1","Team2",
+#Team 1
+'CoachPriorWins_1','seed_1','rank_1','conference_1',
+#Kenpom Stats
+'adj_em_1','adj_o_1','adj_o_rank_1','adj_d_1','adj_d_rank_1','adj_tempo_1','adj_tempo_rank_1','luck_1','luck_rank_1',
+'sos_adj_em_1','sos_adj_em_rank_1','sos_adj_o_1','sos_adj_o_rank_1','sos_adj_d_1','sos_adj_d_rank_1',
+'nc_sos_adj_em_1','nc_sos_adj_em_rank_1',
+#Season Stats
+'wins_1','loses_1','win_pcnt_1','score_1','opp_score_1','FGP_1','FGP3_1','FTP_1','ORPG_1','DRPG_1','ASPG_1','TOPG_1',
+'STPG_1','BLPG_1','PFPG_1','MORP_1','MPOS_1','TPpcnt_1','PPPos_1','OPPPos_1','TOPPos_1','DRPPos_1','STLPos_1',
 
+#Team 2
+'CoachPriorWins_2','seed_2','rank_2','conference_2',
+#Team2 Kenpom Stats
+'adj_em_2','adj_o_2','adj_o_rank_2','adj_d_2','adj_d_rank_2','adj_tempo_2','adj_tempo_rank_2','luck_2','luck_rank_2',
+'sos_adj_em_2','sos_adj_em_rank_2','sos_adj_o_2','sos_adj_o_rank_2','sos_adj_d_2','sos_adj_d_rank_2','nc_sos_adj_em_2',
+'nc_sos_adj_em_rank_2',
+#Team2 Stats
+'wins_2','loses_2','win_pcnt_2','score_2','opp_score_2','FGP_2','FGP3_2','FTP_2','ORPG_2','DRPG_2','ASPG_2','TOPG_2','STPG_2',
+'BLPG_2','PFPG_2','MORP_2','MPOS_2','TPpcnt_2','PPPos_2','OPPPos_2','TOPPos_2','DRPPos_2','STLPos_2',
+#Kenpom Differences
+'adj_em_diff','adj_o_diff','adj_o_rank_diff','adj_d_diff','adj_d_rank_diff','adj_tempo_diff','adj_tempo_rank_diff',
+'luck_diff','luck_rank_diff','sos_adj_em_diff','sos_adj_em_rank_diff','sos_adj_o_diff','sos_adj_o_rank_diff',
+'sos_adj_d_diff','sos_adj_d_rank_diff','nc_sos_adj_em_diff','nc_sos_adj_em_rank_diff',
+#Team Stat Differences
+'FGP_diff','FGP3_diff','FTP_diff','ORPG_diff','DRPG_diff','ASPG_diff','TOPG_diff','STPG_diff','BLPG_diff',
+'PFPG_diff','MORP_diff','MPOS_diff','TPpcnt_diff','PPPos_diff','OPPPos_diff','TOPPos_diff','DRPPos_diff',
+'STLPos_diff','seed_diff')
+
+#Subset to predictor columns
 t2_pred <- test2[,pred2,with=F]
 t2_pred[,result:=1]
 
+#Recode the seed and rank as numeric 
 t2_pred[,seed_1:=as.numeric(seed_1)]
 t2_pred[,seed_2:=as.numeric(seed_2)]
-t2_pred[,seed_1:=as.numeric(rank_1)]
-t2_pred[,seed_2:=as.numeric(rank_2)]
+t2_pred[,rank_1:=as.numeric(rank_1)]
+t2_pred[,rank_2:=as.numeric(rank_2)]
 
+#ensure only complete cases are included
 t2_pred[!complete.cases(t2_pred),]
 
-test2_mat <- model.matrix(result~.+0,data=t2_pred[,4:91])
-
+#Format test matrix
+test2_mat <- model.matrix(t2_pred$result~.+0,data=t2_pred[,4:127])
 test2_dmat <- xgb.DMatrix(data=test2_mat)
 
-t2_pred$Pred <- predict(xgb1,test2_dmat)
+#Make predictions with test matrix
+t2_pred$Pred1 <- predict(xgb1,test2_dmat)
 
-sub1 <- merge(sub_samp1,t2_pred[,.(Season,Team1,Team2,Pred)],by=c("Season", "Team1", "Team2"))
-
-
-
-fwrite(sub1,"NCAA2019_submission1.csv")
+sub3 <- t2_pred[,.(ID=paste(Season, Team1, Team2,sep="_"),Pred)]
+fwrite(sub3,"NCAA2019_stage2_sub2.csv")
 
 
-sub2 <- t2_pred[,.(ID=paste(Season, Team1, Team2,sep="_"),Pred)]
+#Make predictions with test matrix
+t2_pred$Pred2 <- predict(xgb2,test2_dmat)
 
-fwrite(sub2,"NCAA2019_submission2.csv")
+sub3 <- t2_pred[,.(ID=paste(Season, Team1, Team2,sep="_"),Pred)]
+fwrite(sub3,"NCAA2019_stage2_sub2.csv")
 
-#Add Massey Ordinals
-list.files()
-massey <- fread("MasseyOrdinals.csv")
+#Make predictions with test matrix
+t2_pred$glmnet_pred <- predict(GLM.fit, newx=model.matrix(result~-1+.,t2_pred[,c(4:71,73:128)]), s = "lambda.min", type="response")
 
-massey[,.N,SystemName]
+
+#Create summary for export to excel
+teams2019 <- merge(teams,seeds[Season==2019,],by="TeamID")
+
+t2_sum <- merge(teams2019[,.(TeamID,TeamName,Seed)],t2_pred,by.x="TeamID",by.y="Team1")
+t2_sum <- merge(teams2019[,.(TeamID,TeamName,Seed)],t2_sum,by.x="TeamID",by.y="Team2")
+
+slots <- fread('NCAATourneySlots.csv')
+t2_sum <- merge(t2_sum,slots[Season==2019,.(StrongSeed,)],by.x="Seed.y",by.y="StrongSeed",all.x=T)
+
+#Add Moneylines to Summary
+t2_sum[,moneylineXGB1:=round(ifelse(Pred1>=.5,Pred1/(1-Pred1)*-100,(1-Pred1)/Pred1*100)-1)]
+t2_sum[,moneylineXGB2:=round(ifelse(Pred>=.5,Pred/(1-Pred)*-100,(1-Pred)/Pred*100),-1)]
+t2_sum[,moneylineGLM:=round(ifelse(glmnet_pred>=.5,glmnet_pred/(1-glmnet_pred)*-100,(1-glmnet_pred)/glmnet_pred*100),-1)]
+
+t2_sum[,R1:=substring(Seed.x,1,1)]
+t2_sum[,R2:=substring(Seed.y,1,1)]
+
+#Create summary of only teams in same region for priting
+summary = t2_sum[R1==R2,.(TeamName.y,Seed.y,kp_rank_1=rank_1,PPPos_1,OPPPos_1,
+                               TeamName.x,Seed.x,kp_rank_2=rank_2,PPPos_2,OPPPos_2,
+                               xgB1=Pred1,xgB2=Pred,glm=glmnet_pred,
+                               moneylineXGB1,moneylineXGB2
+                    )]
+
+fwrite(summary,"NCAA_summary_sheet.csv",sep=',')
+
+#Full summary of all matchups
+summary2 = t2_sum[,.(TeamName.y,Seed.y,kp_rank_1=rank_1,PPPos_1,OPPPos_1,
+                          TeamName.x,Seed.x,kp_rank_2=rank_2,PPPos_2,OPPPos_2,
+                          xgB1=Pred1,xgB2=Pred,glm=glmnet_pred,
+                          moneylineXGB1,moneylineXGB2
+)]
+
+fwrite(summary2,"NCAA_summary_sheet2.csv",sep=',')
+
+
+summary_rd1 = t2_sum[rd1==1,.(TeamName.y,Seed.y,kp_rank_1=rank_1,PPPos_1,OPPPos_1,
+                    TeamName.x,Seed.x,kp_rank_2=rank_2,PPPos_2,OPPPos_2,
+                    xgB1=Pred1,xgB2=Pred,glm=glmnet_pred,
+                    moneylineXGB1,moneylineXGB2,moneylineGLM)]
+
+
 

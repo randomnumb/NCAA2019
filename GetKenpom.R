@@ -97,6 +97,8 @@ kenpom[,TeamName:=gsub("Milwaukee","WI Milwaukee",TeamName)]
 kenpom[,TeamName:=gsub("Western Kentucky","WKU",TeamName)]
 kenpom[,TeamName:=gsub("College of Charleston","Col Charleston",TeamName)]
 kenpom[,TeamName:=gsub("Loyola Chicago","Loyola-Chicago",TeamName)]
+kenpom[,TeamName:=gsub("Abilene Christian","Abilene Chr",TeamName)]
+kenpom[,TeamName:=gsub("Prairie View A&M","Prairie View",TeamName)]
 
 
 ###### Validate match by all team-year combinations ####
